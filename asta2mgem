@@ -319,21 +319,14 @@ local CONFIG = {
         },
 
         Description = {
-            Enabled = false,         -- Automatic description/status generation stays disabled.
-            Type = "Horst",          -- Description format/type used by the original feature.
+            Enabled = true,          -- Uses the cleaner Horst account-log format below.
+            Type = "Horst",
+            Interval = 30,           -- Seconds between Horst description refreshes.
 
-            Stats = {                -- Stats selected in your config.
-                "Prestige",
-                "Shards",
-                "Slot",
-                "Spins",
-                "Level",
-                "Gems",
-                "Gold",
-            },
-
-            Items = {},              -- No description items selected.
-            Cosmetics = {},          -- No description cosmetics selected.
+            -- Old selectable description fields are no longer used.
+            Stats = {},
+            Items = {},
+            Cosmetics = {},
         },
     },
 
@@ -607,11 +600,8 @@ else
     setValue("WebhookPingMode", C.Webhook.PingMode)
     setValue("WebhookFilters", copyList(C.Webhook.Filters))
 
-    setToggle("SetDescToggle", C.Description.Enabled)
-    setValue("DescTypeDropdown", C.Description.Type)
-    setValue("DescStatsDropdown", copyList(C.Description.Stats))
-    setValue("DescItemsDropdown", copyList(C.Description.Items))
-    setValue("DescCosmeticsDropdown", copyList(C.Description.Cosmetics))
+    -- Horst log is now handled by the always-on clean logger below.
+    -- Old SetDesc/field-selection controls are intentionally not mapped.
 end
 
 -- Exact-ID overrides always win.
@@ -13907,216 +13897,686 @@ if Tabs.Webhook then
         end)
     end)
 end
-if IsIngameLobby() and Tabs.Webhook then
-    local descGroup = Tabs.Webhook:AddRightGroupbox("Set Description")
+-- ============================================================
+-- HORST ACCOUNT LOG / DESCRIPTION - CLEAN FORMAT
+-- Replaces the old one-shot Set Description system.
+-- Format based on the cleaner Horst logger supplied by the user.
+-- ============================================================
+do
+    local HorstPlayers = game:GetService("Players")
+    local HorstReplicatedStorage = game:GetService("ReplicatedStorage")
+    local HorstTeleportService = game:GetService("TeleportService")
+    local HorstHttpService = game:GetService("HttpService")
 
-        local function formatNumber(n)
-        if type(n) ~= "number" then return "0" end
-        return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    local horstPlayer = HorstPlayers.LocalPlayer
+
+    do
+        local started = os.clock()
+
+        while not horstPlayer and os.clock() - started < 30 do
+            task.wait(0.1)
+            horstPlayer = HorstPlayers.LocalPlayer
+        end
     end
 
-        local function getThaiTime()
-        local utcHour = tonumber(os.date("!%H"))
-        local utcMin  = tonumber(os.date("!%M"))
-        local thaiHour = (utcHour + 7) % 24
-        return string.format("%02d:%02d", thaiHour, utcMin)
-    end
+    if horstPlayer and not getgenv().__HB_HORSTLOG then
+        getgenv().__HB_HORSTLOG = true
 
-        local statsFields = {
-        "Level", "Prestige", "Slot", "Gold", "Gems", "Shards", "Spins", "Time"
-    }
-    local selectedStats = {
-        ["Level"] = true,
-        ["Prestige"] = true,
-        ["Slot"] = true,
-        ["Gold"] = true,
-        ["Gems"] = true,
-        ["Shards"] = true,
-        ["Spins"] = true,
-        ["Time"] = true,
-    }
+        local HORST_LOBBY_ID = 14916516914
+        local HORST_TRADE_ID = 14932214603
+        local HORST_MENU_ID = 13379208636
 
-        local itemsFields = {
-        "Memory Scroll", "Emperor's Key", "Female Serum", "Attack Serum", "Armored Serum"
-    }
-    local selectedItems = {
-        ["Memory Scroll"] = true,
-        ["Emperor's Key"] = true,
-        ["Female Serum"] = true,
-        ["Attack Serum"] = true,
-        ["Armored Serum"] = true,
-    }
+        local horstIsLobby =
+            game.PlaceId == HORST_LOBBY_ID
+            or game.PlaceId == HORST_TRADE_ID
 
-        local cosmeticsFields = {
-        "Angel's Halo", "Kitsune Ribbon", "Radiant Headband", "Blood Vial", "Kitsune Mask"
-    }
-    local selectedCosmetics = {
-        ["Angel's Halo"] = true,
-        ["Kitsune Ribbon"] = true,
-        ["Radiant Headband"] = true,
-        ["Blood Vial"] = true,
-        ["Kitsune Mask"] = true,
-    }
+        local horstIsMenu = game.PlaceId == HORST_MENU_ID
 
-    descGroup:AddDropdown("DescTypeDropdown", {
-        Text = "Description Type",
-        Values = {"Horst"},
-        Default = "Horst",
-        Multi = false,
-        Callback = function() end
-    })
+        local horstEnabled = true
+        local horstInterval = 30
 
-    descGroup:AddDivider()
+        pcall(function()
+            if CONFIG
+                and CONFIG.Mission
+                and CONFIG.Mission.Description then
 
-    descGroup:AddDropdown("DescStatsDropdown", {
-        Text = "Stats to include",
-        Values = statsFields,
-        Default = selectedStats,
-        Multi = true,
-        Callback = function(v) selectedStats = v end
-    })
+                horstEnabled =
+                    CONFIG.Mission.Description.Enabled ~= false
 
-    descGroup:AddDivider()
+                horstInterval =
+                    tonumber(CONFIG.Mission.Description.Interval)
+                    or 30
+            end
+        end)
 
-    descGroup:AddDropdown("DescItemsDropdown", {
-        Text = "Items to include",
-        Values = itemsFields,
-        Default = selectedItems,
-        Multi = true,
-        Callback = function(v) selectedItems = v end
-    })
+        if horstEnabled then
+            local horstDir =
+                "./HBHub/aotr/" .. tostring(horstPlayer.UserId)
 
-    descGroup:AddDivider()
+            pcall(function()
+                if not isfolder("./HBHub") then
+                    makefolder("./HBHub")
+                end
+            end)
 
-    descGroup:AddDropdown("DescCosmeticsDropdown", {
-        Text = "Cosmetics to include",
-        Values = cosmeticsFields,
-        Default = selectedCosmetics,
-        Multi = true,
-        Callback = function(v) selectedCosmetics = v end
-    })
+            pcall(function()
+                if not isfolder("./HBHub/aotr") then
+                    makefolder("./HBHub/aotr")
+                end
+            end)
 
-    descGroup:AddDivider()
+            pcall(function()
+                if not isfolder(horstDir) then
+                    makefolder(horstDir)
+                end
+            end)
 
-    descGroup:AddToggle("SetDescToggle", {
-        Text = "Apply Description (once, after 1s)",
-        Default = false,
-        Callback = function(v)
-            if not v then return end
+            local horstCachePath =
+                horstDir .. "/horst_cache.json"
 
-            task.spawn(function()
-                task.wait(1)
+            local horstBanStatePath =
+                horstDir .. "/ban_state.txt"
 
-                local success, data = pcall(function()
-                    return GET:InvokeServer("Data", "Copy")
+            local horstAssets =
+                HorstReplicatedStorage:WaitForChild(
+                    "Assets",
+                    30
+                )
+
+            local horstRemotes =
+                horstAssets
+                and horstAssets:WaitForChild(
+                    "Remotes",
+                    30
+                )
+
+            if not horstRemotes then
+                task.wait(5)
+
+                pcall(function()
+                    HorstTeleportService:Teleport(
+                        game.PlaceId,
+                        horstPlayer
+                    )
                 end)
+            else
+                local horstGET =
+                    horstRemotes:WaitForChild(
+                        "GET",
+                        15
+                    )
 
-                if success and data and data.Slots then
-                    local currentSlot = data.Current_Slot or "A"
-                    local slotData = data.Slots[currentSlot]
+                local horstGETAlt = nil
 
-                    if slotData then
-                                                local valueMap = {}
-                        
-                        valueMap.Level = (slotData.Progression and slotData.Progression.Level) or 0
-                        valueMap.Prestige = (slotData.Progression and slotData.Progression.Prestige) or 0
-                        valueMap.Slot = currentSlot
-                        valueMap.Gold = (slotData.Currency and slotData.Currency.Gold) or 0
-                        valueMap.Gems = (slotData.Currency and slotData.Currency.Gems) or 0
-                        valueMap.Shards = (slotData.Currency and slotData.Currency.Shards) or 0
-                        valueMap.Spins = data.Spins or 0
-                        valueMap.Time = getThaiTime()
+                if horstGET then
+                    for _, remote in ipairs(
+                        horstRemotes:GetChildren()
+                    ) do
+                        if remote:IsA("RemoteFunction")
+                            and remote ~= horstGET then
 
-                        local items = (slotData.Inventory and slotData.Inventory.Items) or {}
-                        for _, field in ipairs(itemsFields) do
-                            valueMap[field] = items[field] or 0
-                        end
-
-                        local cosmetics = (slotData.Inventory and slotData.Inventory.Cosmetics) or {}
-                        for _, field in ipairs(cosmeticsFields) do
-                            valueMap[field] = cosmetics[field] or 0
-                        end
-
-                                                local parts = {}
-
-                                                for _, field in ipairs(statsFields) do
-                            if selectedStats[field] and valueMap[field] ~= nil then
-                                local val = valueMap[field]
-                                if field ~= "Slot" and field ~= "Time" then
-                                    val = formatNumber(val)
-                                end
-                                table.insert(parts, string.format("%s: %s", field, val))
-                            end
-                        end
-
-                        for _, field in ipairs(itemsFields) do
-                            if selectedItems[field] and valueMap[field] ~= nil and valueMap[field] > 0 then
-                                local val = valueMap[field]
-                                val = formatNumber(val)
-                                table.insert(parts, string.format("%s: %s", field, val))
-                            end
-                        end
-
-                        for _, field in ipairs(cosmeticsFields) do
-                            if selectedCosmetics[field] and valueMap[field] ~= nil and valueMap[field] > 0 then
-                                local val = valueMap[field]
-                                val = formatNumber(val)
-                                table.insert(parts, string.format("%s: %s", field, val))
-                            end
-                        end
-
-                                                -- Shadow Ban Status (Lobby/Main Menu only)
-                                                local function IsInMission()
-                                                    local player = game:GetService("Players").LocalPlayer
-
-                                                    if player:GetAttribute("InMission") == true then
-                                                        return true
-                                                    end
-
-                                                    if player:GetAttribute("Mission") == true then
-                                                        return true
-                                                    end
-
-                                                    return false
-                                                end
-
-                                                local function GetShadowBanStatus()
-                                                    local player = game:GetService("Players").LocalPlayer
-
-                                                    if player:GetAttribute("Blacklisted") == true then
-                                                        return "SHADOW BANNED"
-                                                    end
-
-                                                    if player:GetAttribute("Exploiter") == true then
-                                                        return "SHADOW BANNED"
-                                                    end
-
-                                                    return "SAFE"
-                                                end
-
-                                                if not IsInMission() then
-                                                    table.insert(
-                                                        parts,
-                                                        "Shadow Ban: " .. GetShadowBanStatus()
-                                                    )
-                                                end
-
-                                                local description = table.concat(parts, "  ")
-
-                        if _G and _G.Horst_SetDescription then
-                            _G.Horst_SetDescription(description)
+                            horstGETAlt = remote
+                            break
                         end
                     end
                 end
 
-                pcall(function()
-                    if Options and Options.SetDescToggle then
-                        Options.SetDescToggle:SetValue(false)
+                if horstGET then
+                    local horstGetBusy = false
+                    local horstLastDataCopy = -99
+                    local horstDataRF = nil
+
+                    local function horstDataCopy()
+                        if os.clock() - horstLastDataCopy < 5 then
+                            return nil
+                        end
+
+                        horstLastDataCopy = os.clock()
+
+                        local order = {
+                            horstDataRF or horstGET,
+                            horstGETAlt,
+                            horstGET,
+                        }
+
+                        for _, rf in ipairs(order) do
+                            if rf then
+                                local data, slotResult
+                                local waitStarted = os.clock()
+
+                                while horstGetBusy
+                                    and os.clock() - waitStarted < 10 do
+
+                                    task.wait(0.03)
+                                end
+
+                                horstGetBusy = true
+
+                                local result = table.pack(
+                                    pcall(
+                                        rf.InvokeServer,
+                                        rf,
+                                        "Data",
+                                        "Copy"
+                                    )
+                                )
+
+                                horstGetBusy = false
+
+                                if result[1] then
+                                    data = result[2]
+                                    slotResult = result[3]
+                                end
+
+                                if type(data) == "table"
+                                    and type(data.Slots) == "table" then
+
+                                    horstDataRF = rf
+                                    return data, slotResult
+                                end
+                            end
+                        end
+
+                        return nil
                     end
-                end)
-            end)
+
+                    local horstMapData = nil
+
+                    if not horstIsLobby
+                        and not horstIsMenu then
+
+                        task.spawn(function()
+                            task.wait(3)
+
+                            local data =
+                                horstDataCopy()
+
+                            if type(data) == "table" then
+                                horstMapData = data
+                            end
+                        end)
+                    end
+
+                    local horstSlotCache = nil
+                    local horstSlotCacheAt = 0
+
+                    local function horstGetSlotData()
+                        if horstSlotCache
+                            and os.clock() - horstSlotCacheAt < 20 then
+
+                            return horstSlotCache
+                        end
+
+                        local data, slotResult
+
+                        if horstIsLobby or horstIsMenu then
+                            data, slotResult =
+                                horstDataCopy()
+                        end
+
+                        if type(data) ~= "table"
+                            and type(horstMapData) == "table" then
+
+                            data = horstMapData
+                        end
+
+                        if type(data) ~= "table" then
+                            return nil
+                        end
+
+                        local slotKey =
+                            data.Current_Slot
+                            or horstPlayer:GetAttribute("Slot")
+                            or "A"
+
+                        local slotData =
+                            (
+                                type(slotResult) == "table"
+                                and slotResult.Progression
+                            )
+                            and slotResult
+                            or (
+                                type(data.Slots) == "table"
+                                and (
+                                    data.Slots[slotKey]
+                                    or data.Slots.A
+                                )
+                            )
+
+                        if type(slotData) == "table" then
+                            horstSlotCache = slotData
+                            horstSlotCacheAt = os.clock()
+
+                            return slotData
+                        end
+
+                        return nil
+                    end
+
+                    local function horstKeepBest(fresh)
+                        local old = nil
+
+                        pcall(function()
+                            if isfile(horstCachePath) then
+                                old = HorstHttpService:JSONDecode(
+                                    readfile(horstCachePath)
+                                )
+                            end
+                        end)
+
+                        if type(old) ~= "table" then
+                            old = nil
+                        end
+
+                        if type(fresh) ~= "table" then
+                            return old
+                        end
+
+                        if not old then
+                            return fresh
+                        end
+
+                        for _, key in ipairs({
+                            "Progression",
+                            "Inventory",
+                            "Avatar",
+                        }) do
+                            if type(old[key]) == "table"
+                                and type(fresh[key]) ~= "table" then
+
+                                fresh[key] = old[key]
+                            end
+                        end
+
+                        if type(old.Currency) == "table" then
+                            if type(fresh.Currency) ~= "table" then
+                                fresh.Currency = {}
+                            end
+
+                            for key, value in pairs(old.Currency) do
+                                local newValue =
+                                    tonumber(fresh.Currency[key])
+
+                                local oldValue =
+                                    tonumber(value)
+
+                                if oldValue
+                                    and oldValue > 0
+                                    and (
+                                        not newValue
+                                        or newValue == 0
+                                    ) then
+
+                                    fresh.Currency[key] = value
+                                end
+                            end
+                        end
+
+                        return fresh
+                    end
+
+                    local function horstBanState()
+                        local saved = nil
+
+                        pcall(function()
+                            if isfile(horstBanStatePath) then
+                                saved =
+                                    readfile(
+                                        horstBanStatePath
+                                    )
+                            end
+                        end)
+
+                        if horstIsLobby then
+                            if horstPlayer:GetAttribute(
+                                "Prestige"
+                            ) == nil then
+
+                                if saved == "1" then
+                                    return "banned"
+                                end
+
+                                if saved == "0" then
+                                    return "clean"
+                                end
+
+                                return "unknown"
+                            end
+
+                            -- Keep the accurate boolean check used by the
+                            -- TownShip script instead of treating a false
+                            -- attribute as banned.
+                            local hit =
+                                horstPlayer:GetAttribute(
+                                    "Blacklisted"
+                                ) == true
+                                or horstPlayer:GetAttribute(
+                                    "Exploiter"
+                                ) == true
+
+                            pcall(function()
+                                writefile(
+                                    horstBanStatePath,
+                                    hit and "1" or "0"
+                                )
+                            end)
+
+                            return hit and "banned" or "clean"
+                        end
+
+                        if saved == "1" then
+                            return "banned"
+                        end
+
+                        if saved == "0" then
+                            return "clean"
+                        end
+
+                        return "unknown"
+                    end
+
+                    local function horstFmtShort(number)
+                        number = tonumber(number)
+
+                        if not number then
+                            return "?"
+                        end
+
+                        local absolute =
+                            math.abs(number)
+
+                        if absolute >= 1e6 then
+                            return string.format(
+                                "%.2fM",
+                                number / 1e6
+                            )
+                        elseif absolute >= 1e3 then
+                            return string.format(
+                                "%.2fK",
+                                number / 1e3
+                            )
+                        end
+
+                        return tostring(
+                            math.floor(number)
+                        )
+                    end
+
+                    local function horstScanInventory(
+                        inventory,
+                        keyword
+                    )
+                        if type(inventory) ~= "table" then
+                            return 0
+                        end
+
+                        local total = 0
+
+                        for _, items in pairs(inventory) do
+                            if type(items) == "table" then
+                                for name, amount in pairs(items) do
+                                    if type(name) == "string"
+                                        and string.find(
+                                            name,
+                                            keyword
+                                        ) then
+
+                                        total = total
+                                            + (
+                                                tonumber(
+                                                    type(amount)
+                                                        == "table"
+                                                        and (
+                                                            amount.Amount
+                                                            or amount.Count
+                                                        )
+                                                        or amount
+                                                )
+                                                or 0
+                                            )
+                                    end
+                                end
+                            end
+                        end
+
+                        return total
+                    end
+
+                    -- Load Horst's SetDescription helper.
+                    task.spawn(function()
+                        if not game:IsLoaded() then
+                            game.Loaded:Wait()
+                        end
+
+                        task.wait(2)
+
+                        for _ = 1, 8 do
+                            if _G
+                                and type(
+                                    _G.Horst_SetDescription
+                                ) == "function" then
+
+                                break
+                            end
+
+                            pcall(function()
+                                loadstring(
+                                    game:HttpGet(
+                                        "https://raw.githubusercontent.com/HorstSpaceX/last_update/main/on_loaded.lua"
+                                    )
+                                )()
+                            end)
+
+                            task.wait(3)
+                        end
+                    end)
+
+                    local function horstSendUpdate()
+                        if not (
+                            _G
+                            and type(
+                                _G.Horst_SetDescription
+                            ) == "function"
+                        ) then
+
+                            return false
+                        end
+
+                        local slot =
+                            horstKeepBest(
+                                horstGetSlotData()
+                            )
+
+                        if type(slot) ~= "table" then
+                            return false
+                        end
+
+                        if slot.Progression
+                            or slot.Currency then
+
+                            pcall(function()
+                                writefile(
+                                    horstCachePath,
+                                    HorstHttpService:JSONEncode(
+                                        slot
+                                    )
+                                )
+                            end)
+                        end
+
+                        local progression =
+                            slot.Progression or {}
+
+                        local currency =
+                            slot.Currency or {}
+
+                        local inventory =
+                            slot.Inventory or {}
+
+                        local family =
+                            (
+                                slot.Avatar
+                                and slot.Avatar.Family
+                            )
+                            or "None"
+
+                        local level =
+                            horstFmtShort(
+                                progression.Level
+                                or horstPlayer:GetAttribute(
+                                    "Level"
+                                )
+                                or 1
+                            )
+
+                        local prestige =
+                            horstFmtShort(
+                                progression.Prestige
+                                or 0
+                            )
+
+                        local gold =
+                            horstFmtShort(
+                                currency.Gold
+                                or 0
+                            )
+
+                        local gems =
+                            horstFmtShort(
+                                currency.Gems
+                                or 0
+                            )
+
+                        local serum =
+                            horstScanInventory(
+                                inventory,
+                                "Serum"
+                            )
+
+                        local scroll =
+                            horstScanInventory(
+                                inventory,
+                                "Memory Scroll"
+                            )
+
+                        local ban =
+                            horstBanState()
+
+                        local banText =
+                            ban == "banned"
+                                and "❌ BANNED"
+                            or ban == "clean"
+                                and "✅ Clean"
+                            or "❓ Unknown (open Lobby)"
+
+                        local description =
+                            table.concat(
+                                {
+                                    "🏷 Clan: "
+                                        .. tostring(family),
+                                    "⭐ Lv " .. level,
+                                    "👑 Pres " .. prestige,
+                                    "💰 Gold " .. gold,
+                                    "💎 Gems " .. gems,
+                                    "🧪 Serum "
+                                        .. tostring(serum),
+                                    "📜 Scroll "
+                                        .. tostring(scroll),
+                                    "Ban: " .. banText,
+                                },
+                                "  ,  "
+                            )
+
+                        description =
+                            description:gsub(
+                                "[|;]",
+                                ","
+                            )
+
+                        local json = nil
+
+                        pcall(function()
+                            json =
+                                HorstHttpService:JSONEncode({
+                                    User =
+                                        horstPlayer.Name,
+                                    Level =
+                                        tonumber(
+                                            progression.Level
+                                        )
+                                        or horstPlayer:GetAttribute(
+                                            "Level"
+                                        ),
+                                    Prestige =
+                                        tonumber(
+                                            progression.Prestige
+                                        )
+                                        or 0,
+                                    Gold =
+                                        tonumber(
+                                            currency.Gold
+                                        )
+                                        or 0,
+                                    Gems =
+                                        tonumber(
+                                            currency.Gems
+                                        )
+                                        or 0,
+                                    Serum = serum,
+                                    Scroll = scroll,
+                                    Clan =
+                                        tostring(family),
+                                    Ban = ban,
+                                })
+                        end)
+
+                        local ok, err =
+                            pcall(function()
+                                _G.Horst_SetDescription(
+                                    description,
+                                    json
+                                )
+                            end)
+
+                        if ok then
+                            print(
+                                "[HorstLog] Updated:",
+                                description
+                            )
+                            return true
+                        end
+
+                        warn(
+                            "[HorstLog] SetDescription failed:",
+                            tostring(err)
+                        )
+
+                        return false
+                    end
+
+                    task.spawn(function()
+                        -- First update quickly so you don't have to wait
+                        -- a full 30 seconds to see the new format.
+                        task.wait(3)
+
+                        while true do
+                            pcall(horstSendUpdate)
+                            task.wait(
+                                math.max(
+                                    5,
+                                    horstInterval
+                                )
+                            )
+                        end
+                    end)
+                end
+            end
+        else
+            print(
+                "[HorstLog] Disabled by config"
+            )
         end
-    })
+    end
 end
 
 if Tabs.AutoFarm then
