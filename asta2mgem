@@ -115,8 +115,7 @@ local CONFIG = {
             Enabled = true,          -- Master toggle for the automatic boost system.
             Gold = true,             -- Enables automatic Gold boost handling.
             Luck = false,            -- Enables automatic Luck boost handling.
-            XP = false,              -- Keep old repeating XP worker disabled.
-            OneTimeXPByPercent = true, -- If real XP% is below 100, buy/use ONE 2H XP boost for this script session only.
+            XP = false,              -- XP boost buying/using is disabled.
             Delay = 1,               -- Seconds between automatic boost checks.
 
             Purchase = false,        -- Enables the separate boost-purchase feature.
@@ -281,7 +280,7 @@ local CONFIG = {
 
         Performance = {
             UIScale = 100,           -- Old UI scale percentage. Kept for compatibility even though this build is headless.
-            FPSLimit = 15,           -- FPS cap from the config you sent.
+            FPSLimit = 10,           -- FPS cap from the config you sent.
 
             RenderModes = {          -- Performance/render optimizations to enable.
                 "Delete Map",        -- Removes supported map objects to reduce rendering load.
@@ -296,7 +295,7 @@ local CONFIG = {
 
         FailSafe = {
             Enabled = true,          -- Enables the combined fail-safe action system.
-            Delay = 46,              -- Seconds before the configured fail-safe action is performed.
+            Delay = 100,              -- Seconds before the configured fail-safe action is performed.
 
             Actions = {              -- Actions performed by the fail-safe when enabled.
                 "Teleport to Lobby", -- Teleports back to Town Central/lobby.
@@ -460,7 +459,6 @@ elseif game.PlaceId == LOBBY_ID_CONFIG
     setToggle("AutoBoost_Enable", C.Boosts.Enabled)
     setToggle("AutoBoost_Gold", C.Boosts.Gold)
     setToggle("AutoBoost_Luck", C.Boosts.Luck)
-    setToggle("AutoBoost_XP", C.Boosts.XP)
     setValue("AutoBoost_Delay", C.Boosts.Delay)
 
     setToggle("Boost_PurchaseToggle", C.Boosts.Purchase)
@@ -1639,17 +1637,11 @@ if IsLobbyLobby() then
                 ["1h"]  = "2x Luck Boost [1h]",
                 ["30m"] = "2x Luck Boost [30m]",
             },
-            XP = {
-                ["2h"]  = "2x XP Boost [2h]",
-                ["1h"]  = "2x XP Boost [1h]",
-                ["30m"] = "2x XP Boost [30m]",
-            },
         }
 
         local BOOST_IDS = {
             Gold = { ["2h"] = 9, ["1h"] = 8, ["30m"] = 7 },
             Luck = { ["2h"] = nil, ["1h"] = nil, ["30m"] = nil },
-            XP   = { ["2h"] = nil, ["1h"] = nil, ["30m"] = nil },
         }
 
         local BOOST_DURATION = {
@@ -1662,7 +1654,7 @@ if IsLobbyLobby() then
 
         local boostState = {
             enabled = false,
-            selected = { Gold = true, Luck = false, XP = false },
+            selected = { Gold = true, Luck = false },
             cycleDelay = 1,
             bought = 0,
             used = 0,
@@ -2336,13 +2328,6 @@ if IsLobbyLobby() then
             end
         })
 
-        BoostGroup:AddToggle("AutoBoost_XP", {
-            Text = "XP Boost",
-            Default = false,
-            Callback = function(v)
-                boostState.selected.XP = v
-            end
-        })
 
         BoostGroup:AddDivider()
 
@@ -2353,7 +2338,7 @@ if IsLobbyLobby() then
         BoostGroup:AddButton("Check Active Boosts", function()
             local msg = {}
 
-            for _, boostType in ipairs({"Gold", "Luck", "XP"}) do
+            for _, boostType in ipairs({"Gold", "Luck"}) do
                 local seconds
 
                 if boostType == "Gold" then
@@ -2417,9 +2402,6 @@ if IsLobbyLobby() then
                     boostState.selected.Luck = Options.AutoBoost_Luck.Value
                 end
 
-                if Options and Options.AutoBoost_XP then
-                    boostState.selected.XP = Options.AutoBoost_XP.Value
-                end
 
                 if Options and Options.AutoBoost_Delay then
                     boostState.cycleDelay = Options.AutoBoost_Delay.Value
@@ -7972,9 +7954,9 @@ end)
     local autoUseTask = nil
 
     local ALL_BOOSTS = {
-        "2X XP Boost [30M]", "2X Luck [30M]", "2X Gold [30M]",
-        "2X XP Boost [1H]", "2X Luck [1H]", "2X Gold [1H]",
-        "2X XP Boost [2H]", "2X Luck [2H]", "2X Gold [2H]"
+        "2X Luck [30M]", "2X Gold [30M]",
+        "2X Luck [1H]", "2X Gold [1H]",
+        "2X Luck [2H]", "2X Gold [2H]"
     }
 
     local PRICE_MAP = {
@@ -8003,9 +7985,6 @@ end)
     end
 
     local BOOST_MAP = {
-        ["2X XP Boost [30M]"] = {type = "xp", duration = "30M", id = 1},
-        ["2X XP Boost [1H]"] = {type = "xp", duration = "1H", id = 2},
-        ["2X XP Boost [2H]"] = {type = "xp", duration = "2H", id = 3},
         ["2X Luck [30M]"] = {type = "luck", duration = "30M", id = 4},
         ["2X Luck [1H]"] = {type = "luck", duration = "1H", id = 5},
         ["2X Luck [2H]"] = {type = "luck", duration = "2H", id = 6},
@@ -8586,341 +8565,6 @@ if IsLobbyLobby() then
         return percent
     end
 
-
-    -- ============================================================
-    -- ONE-TIME XP BOOST BY THE SAME XP% READING USED BY PRESTIGE
-    --
-    -- Rules:
-    --   * real XP% < 100  -> buy ONE 2H XP boost and use it
-    --   * XP% >= 100      -> do nothing
-    --   * unreadable XP   -> wait; never guess and never spend
-    --   * once a buy request is accepted, never buy another XP
-    --     boost during this script session, even if the timer later ends
-    -- ============================================================
-
-    local function getReliableXPPercentForBoost()
-        -- Use the same Progression fields as getXPPercent(), but return nil
-        -- when there is no trustworthy reading instead of confusing "unknown"
-        -- with a real 0%.
-        local slot = getSlotData(true)
-
-        if slot and slot.Progression then
-            local progression = slot.Progression
-            local xp = tonumber(progression.XP)
-            local maxXp = tonumber(
-                progression.Max_XP
-                or progression.MaxXP
-            )
-
-            if xp ~= nil and maxXp ~= nil and maxXp > 0 then
-                return math.clamp(
-                    math.floor((xp / maxXp) * 100),
-                    0,
-                    100
-                )
-            end
-
-            if progression.XPPercent ~= nil then
-                local percent = tonumber(progression.XPPercent)
-
-                if percent ~= nil then
-                    return math.clamp(math.floor(percent), 0, 100)
-                end
-            end
-        end
-
-        -- Same UI fallback used by the existing prestige reader.
-        local percent = nil
-
-        pcall(function()
-            local xpLabel =
-                Player.PlayerGui.Interface.Gear_Up.XP.Percentage
-
-            if xpLabel and xpLabel.Text then
-                percent = tonumber(
-                    tostring(xpLabel.Text):match("(%d+)%%")
-                )
-            end
-        end)
-
-        if percent ~= nil then
-            return math.clamp(math.floor(percent), 0, 100)
-        end
-
-        return nil
-    end
-
-    local function parseXPBoostTimerText(value)
-        if value == nil then
-            return nil
-        end
-
-        local s = tostring(value)
-            :gsub("^%s+", "")
-            :gsub("%s+$", "")
-
-        local h, m, sec = s:match("(%d+):(%d+):(%d+)")
-        if h then
-            return tonumber(h) * 3600
-                + tonumber(m) * 60
-                + tonumber(sec)
-        end
-
-        local mm, ss = s:match("^(%d+):(%d+)$")
-        if mm then
-            return tonumber(mm) * 60 + tonumber(ss)
-        end
-
-        local hours = tonumber(s:match("(%d+)%s*[hH]")) or 0
-        local mins = tonumber(s:match("(%d+)%s*[mM]")) or 0
-        local secs = tonumber(s:match("(%d+)%s*[sS]")) or 0
-
-        if hours > 0 or mins > 0 or secs > 0 then
-            return hours * 3600 + mins * 60 + secs
-        end
-
-        if s:match("^%d+$") then
-            return tonumber(s)
-        end
-
-        return nil
-    end
-
-    local function readXPBoostTimerForOneTime()
-        local getters = {
-            function()
-                return Player.PlayerGui.Interface.Gear_Up.Boosts.XP.Time.Time
-            end,
-            function()
-                return Player.PlayerGui.Interface.Gear_Up.Boosts.XP.Time
-            end,
-            function()
-                return Player.PlayerGui.Interface.Gear_Up.Boosts.XP.Timer.Time
-            end,
-            function()
-                return Player.PlayerGui.Interface.Gear_Up.Boosts.XP.Timer
-            end,
-        }
-
-        for _, getter in ipairs(getters) do
-            local ok, obj = pcall(getter)
-
-            if ok and obj then
-                local raw = nil
-
-                if typeof(obj) == "Instance" then
-                    pcall(function()
-                        if obj:IsA("TextLabel")
-                            or obj:IsA("TextButton") then
-
-                            raw = obj.Text
-                        elseif obj:IsA("IntValue")
-                            or obj:IsA("NumberValue") then
-
-                            raw = obj.Value
-                        end
-                    end)
-                else
-                    raw = obj
-                end
-
-                local seconds = parseXPBoostTimerText(raw)
-
-                if seconds ~= nil then
-                    return seconds
-                end
-            end
-        end
-
-        return nil
-    end
-
-    local function runOneTimeXPBoostByPercent()
-        local G = getgenv()
-
-        -- Prevent duplicate workers in the same executor environment.
-        if G.TownShipOneTimeXPWorkerStarted then
-            return
-        end
-
-        G.TownShipOneTimeXPWorkerStarted = true
-
-        local enabled = true
-        pcall(function()
-            enabled =
-                CONFIG
-                and CONFIG.Lobby
-                and CONFIG.Lobby.Boosts
-                and CONFIG.Lobby.Boosts.OneTimeXPByPercent ~= false
-        end)
-
-        if not enabled then
-            print("[XPBoost-OneTime] Disabled by config")
-            return
-        end
-
-        -- If this session already sent an accepted XP purchase, never buy
-        -- another one while this script environment remains open.
-        if G.TownShipXPBoostBoughtThisOpen then
-            print(
-                "[XPBoost-OneTime] Already bought this session - no second purchase"
-            )
-            return
-        end
-
-        -- Wait for a trustworthy XP reading. Do not treat an unavailable
-        -- reading as 0%, because that could spend Gold incorrectly.
-        local currentXP = nil
-        local started = tick()
-
-        repeat
-            currentXP = getReliableXPPercentForBoost()
-
-            if currentXP ~= nil then
-                break
-            end
-
-            task.wait(0.25)
-        until (tick() - started) >= 20
-
-        if currentXP == nil then
-            warn(
-                "[XPBoost-OneTime] XP% unavailable - purchase blocked"
-            )
-            return
-        end
-
-        print(
-            string.format(
-                "[XPBoost-OneTime] Real XP reading: %d%%",
-                currentXP
-            )
-        )
-
-        if currentXP >= 100 then
-            print(
-                "[XPBoost-OneTime] XP is 100% - no XP boost needed"
-            )
-            G.TownShipXPBoostCheckedThisOpen = true
-            return
-        end
-
-        -- If an XP boost is already active, there is no reason to buy another.
-        -- Mark this session handled so this worker does not purchase later.
-        local timer = readXPBoostTimerForOneTime()
-
-        if timer ~= nil and timer > 3 then
-            print(
-                string.format(
-                    "[XPBoost-OneTime] XP %d%% but boost already active (%ds) - no purchase",
-                    currentXP,
-                    math.floor(timer)
-                )
-            )
-
-            G.TownShipXPBoostCheckedThisOpen = true
-            G.TownShipXPBoostAlreadyActiveThisOpen = true
-            return
-        end
-
-        -- Existing market table in this script maps the 2H XP boost to ID 3.
-        local XP_BOOST_ID = 3
-        local XP_BOOST_ITEM = "2X XP Boost [2H]"
-
-        print(
-            string.format(
-                "[XPBoost-OneTime] XP %d%% < 100%% - buying ONE %s",
-                currentXP,
-                XP_BOOST_ITEM
-            )
-        )
-
-        local buyOk, buyResult = pcall(function()
-            return GET:InvokeServer(
-                "S_Market",
-                "Buy",
-                "1_Boosts",
-                XP_BOOST_ID,
-                1
-            )
-        end)
-
-        if not buyOk or buyResult == false then
-            warn(
-                "[XPBoost-OneTime] Buy failed:",
-                tostring(buyResult)
-            )
-
-            -- Allow a future retry because no accepted purchase occurred.
-            G.TownShipOneTimeXPWorkerStarted = false
-            return
-        end
-
-        -- Set the no-more-buy flag IMMEDIATELY after an accepted market call.
-        -- Even if activation is delayed, this script will not buy a second one.
-        G.TownShipXPBoostBoughtThisOpen = true
-        G.TownShipXPBoostCheckedThisOpen = true
-
-        print(
-            "[XPBoost-OneTime] Purchase accepted - second XP purchase is now locked for this session"
-        )
-
-        -- Give market delivery a short moment, then use the item.
-        task.wait(0.15)
-
-        local useOk, useResult = pcall(function()
-            return GET:InvokeServer(
-                "S_Inventory",
-                "Item",
-                XP_BOOST_ITEM
-            )
-        end)
-
-        if not useOk or useResult == false then
-            warn(
-                "[XPBoost-OneTime] Use request failed, but NO second purchase will be made:",
-                tostring(useResult)
-            )
-            return
-        end
-
-        -- Short confirmation window. This does not trigger another purchase.
-        local verifyStart = tick()
-
-        repeat
-            task.wait(0.05)
-
-            local seconds = readXPBoostTimerForOneTime()
-
-            if seconds ~= nil and seconds > 3 then
-                print(
-                    string.format(
-                        "[XPBoost-OneTime] XP boost ACTIVE | %ds remaining | session purchase locked",
-                        math.floor(seconds)
-                    )
-                )
-
-                Library:Notify(
-                    string.format(
-                        "XP %d%% -> 2H XP Boost active",
-                        currentXP
-                    ),
-                    3
-                )
-
-                return
-            end
-        until (tick() - verifyStart) >= 1.25
-
-        print(
-            "[XPBoost-OneTime] Use sent; timer not confirmed yet. No second purchase will be made this session."
-        )
-    end
-
-    task.defer(function()
-        task.wait(0.35)
-        pcall(runOneTimeXPBoostByPercent)
-    end)
 
     local function getCurrentPrestige()
         local slot = getSlotData()
